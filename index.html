@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SPIKE Pong Control</title>
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      margin: 0;
+      background: #111;
+      color: white;
+    }
+
+    #ui {
+      padding: 10px;
+    }
+
+    #value {
+      font-size: 40px;
+      height: 50px;
+      line-height: 50px;
+    }
+
+    #status {
+      font-size: 50px;
+      margin-top: 10px;
+      height: 60px;
+      line-height: 60px;
+    }
+
+    canvas {
+      background: black;
+      display: block;
+      margin: 10px auto;
+      border: 2px solid white;
+    }
+  </style>
+</head>
+<body>
+
+<div id="ui">
+  <button onclick="connect()">Connect SPIKE</button>
+  <div id="value">--</div>
+  <div id="status">---</div>
+</div>
+
+<canvas id="game" width="800" height="400"></canvas>
+
+<script>
+let lastValue = null;
+
+// GAME STATE
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let playerY = 150;
+let aiY = 150;
+
+const paddleW = 10;
+const paddleH = 80;
+
+let ballX = 400;
+let ballY = 200;
+let ballVX = 3.5;
+let ballVY = 2.8;
+let speedMultiplier = 1;
+const MAX_SPEED = 12;
+
+// SCORE
+let playerScore = 0;
+let aiScore = 0;
+
+// AUDIO
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+// PARTICLES
+let particles = [];
+
+// SCREEN SHAKE
+let shake = 0;
+let flash = 0;
+
+// SERIAL CONNECTION
+async function connect() {
+  const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 115200 });
+
+  const decoder = new TextDecoder();
+  const reader = port.readable.getReader();
+
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    let matches = buffer.match(/-?\d+(\.\d+)?/g);
+
+    if (matches && matches.length > 0) {
+      let num = parseFloat(matches[matches.length - 1]);
+
+      document.getElementById("value").innerText = num;
+
+      // STATUS DISPLAY
+      // HIDE UI VISUALS (no movement, no flashing)
+document.getElementById("value").innerText = "";
+document.getElementById("status").innerText = "";
+
+      // SLOWER PLAYER PADDLE
+      if (num === 3) {
+        playerY -= 0.2;
+      } else {
+        playerY += 0.2;
+      }
+
+      lastValue = num;
+    }
+
+    if (buffer.length > 1000) {
+      buffer = buffer.slice(-200);
+    }
+  }
+}
+
+// RESET BALL AFTER SCORE
+function playHitSound() {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.type = "sawtooth";
+  osc.frequency.value = 220;
+
+  gain.gain.value = 0.08;
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start();
+
+  osc.frequency.exponentialRampToValueAtTime(120, audioCtx.currentTime + 0.08);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+
+  osc.stop(audioCtx.currentTime + 0.08);
+}
+
+function announceScore(text) {
+  // announcer voice
+  const utterance = new SpeechSynthesisUtterance(text);
+
+  const voices = speechSynthesis.getVoices();
+  const announcerVoice = voices.find(v =>
+    v.name.toLowerCase().includes("david") ||
+    v.name.toLowerCase().includes("mark") ||
+    v.name.toLowerCase().includes("english")
+  );
+
+  if (announcerVoice) {
+    utterance.voice = announcerVoice;
+  }
+
+  utterance.rate = 0.85;
+  utterance.pitch = 0.7;
+  utterance.volume = 1;
+
+  speechSynthesis.speak(utterance);
+
+  // huge arcade bass sound
+  const osc1 = audioCtx.createOscillator();
+  const gain1 = audioCtx.createGain();
+
+  osc1.type = "sawtooth";
+  osc1.frequency.value = 80;
+
+  gain1.gain.value = 0.18;
+
+  osc1.connect(gain1);
+  gain1.connect(audioCtx.destination);
+
+  osc1.start();
+
+  osc1.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.5);
+  gain1.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+
+  osc1.stop(audioCtx.currentTime + 0.5);
+
+  // high energy arcade layer
+  const osc2 = audioCtx.createOscillator();
+  const gain2 = audioCtx.createGain();
+
+  osc2.type = "square";
+  osc2.frequency.value = 500;
+
+  gain2.gain.value = 0.06;
+
+  osc2.connect(gain2);
+  gain2.connect(audioCtx.destination);
+
+  osc2.start();
+
+  osc2.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.25);
+  gain2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+
+  osc2.stop(audioCtx.currentTime + 0.25);
+}
+
+function createParticles(x, y, color) {
+  for (let i = 0; i < 25; i++) {
+    particles.push({
+      x: x,
+      y: y,
+      vx: (Math.random() - 0.5) * 8,
+      vy: (Math.random() - 0.5) * 8,
+      life: 30,
+      color: color
+    });
+  }
+}
+
+function speedUp() {
+  speedMultiplier *= 1.06;
+
+  if (speedMultiplier > 3) speedMultiplier = 3;
+
+  ballVX *= 1.06;
+  ballVY *= 1.02;
+
+  let speed = Math.sqrt(ballVX * ballVX + ballVY * ballVY);
+
+  if (speed > MAX_SPEED) {
+    let scale = MAX_SPEED / speed;
+    ballVX *= scale;
+    ballVY *= scale;
+  }
+}
+
+function resetBall() {
+  ballX = canvas.width / 2;
+  ballY = canvas.height / 2;
+
+  ballVX = Math.random() > 0.5 ? 3.5 : -3.5;
+  ballVY = Math.random() > 0.5 ? 2.8 : -2.8;
+}
+
+// GAME LOOP
+function update() {
+  ballX += ballVX;
+  ballY += ballVY;
+
+  // bounce top/bottom
+  if (ballY <= 0 || ballY >= canvas.height) {
+    ballVY *= -1;
+  }
+
+  // player collision with spin effect
+  if (
+    ballX <= 20 &&
+    ballY > playerY &&
+    ballY < playerY + paddleH
+  ) {
+    ballVX *= -1;
+    speedUp();
+    createParticles(ballX, ballY, "red");
+    playHitSound();
+    shake = 10;
+    flash = 1;
+    createParticles(ballX, ballY, "lime");
+    playHitSound();
+    shake = 10;
+    flash = 1;
+
+    // add spin based on where ball hits paddle
+    let hitPos = ballY - (playerY + paddleH / 2);
+    ballVY = hitPos * 0.08;
+  }
+
+  // AI collision with spin effect
+  if (
+    ballX >= canvas.width - 20 &&
+    ballY > aiY &&
+    ballY < aiY + paddleH
+  ) {
+    ballVX *= -1;
+    speedUp();
+
+    // add spin based on where ball hits paddle
+    let hitPos = ballY - (aiY + paddleH / 2);
+    ballVY = hitPos * 0.08;
+  }
+
+  // AI movement
+  aiY += (ballY - (aiY + paddleH / 2)) * 0.05;
+
+  // update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    let p = particles[i];
+
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life--;
+
+    if (p.life <= 0) {
+      particles.splice(i, 1);
+    }
+  }
+
+  // clamp paddles
+  playerY = Math.max(0, Math.min(canvas.height - paddleH, playerY));
+  aiY = Math.max(0, Math.min(canvas.height - paddleH, aiY));
+
+  // scoring
+  if (ballX < 0) {
+    aiScore++;
+    announceScore("AI scores");
+    shake = 20;
+    flash = 1;
+    createParticles(canvas.width / 2, canvas.height / 2, "cyan");
+    resetBall();
+  }
+
+  if (ballX > canvas.width) {
+    playerScore++;
+    announceScore("Player scores");
+    shake = 20;
+    flash = 1;
+    createParticles(canvas.width / 2, canvas.height / 2, "magenta");
+    resetBall();
+  }
+}
+
+function draw() {
+  // smooth cinematic screen shake
+  let dx = Math.sin(Date.now() * 0.03) * shake * 0.4;
+  let dy = Math.cos(Date.now() * 0.025) * shake * 0.4;
+
+  ctx.save();
+  ctx.translate(dx, dy);
+
+  // smooth fadeout
+  shake *= 0.92;
+
+  if (shake < 0.05) {
+    shake = 0;
+  }
+  // intense neon pulse flash
+  if (flash > 0) {
+    ctx.fillStyle = `rgba(0, 255, 255, ${flash * 0.2})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = `rgba(255, 0, 255, ${flash * 0.12})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = `rgba(0, 255, 120, ${flash * 0.08})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    flash *= 0.92;
+  }
+
+  // animated neon background glow
+  let gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+  gradient.addColorStop(0, "rgba(0,255,255,0.08)");
+  gradient.addColorStop(0.5, "rgba(255,0,255,0.06)");
+  gradient.addColorStop(1, "rgba(0,255,120,0.08)");
+
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // motion blur background
+  ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // flashing center line
+  ctx.fillStyle = "cyan";
+  for (let i = 0; i < canvas.height; i += 20) {
+    ctx.fillRect(canvas.width / 2, i, 3, 10);
+  }
+
+  // glowing scores
+  ctx.fillStyle = "white";
+  ctx.font = "50px Arial";
+  ctx.shadowBlur = 25;
+  ctx.shadowColor = "cyan";
+  ctx.fillText(playerScore, canvas.width / 4, 60);
+  ctx.fillText(aiScore, canvas.width * 3 / 4, 60);
+
+  // animated neon player paddle glow
+  ctx.fillStyle = "lime";
+  ctx.shadowBlur = 40 + Math.sin(Date.now() * 0.02) * 10;
+  ctx.shadowColor = "lime";
+  ctx.fillRect(10, playerY, paddleW, paddleH);
+
+  // neon AI paddle
+  ctx.fillStyle = "red";
+  ctx.shadowBlur = 40 + Math.sin(Date.now() * 0.02) * 10;
+  ctx.shadowColor = "red";
+  ctx.fillRect(canvas.width - 20, aiY, paddleW, paddleH);
+
+  // pulsing neon ball aura
+  let pulse = Math.sin(Date.now() * 0.01) * 10 + 35;
+
+  // giant glowing ball
+  ctx.fillStyle = "white";
+  ctx.shadowBlur = pulse;
+  ctx.shadowColor = "cyan";
+
+  ctx.beginPath();
+  ctx.arc(ballX, ballY, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // speed trail effect
+  ctx.beginPath();
+  ctx.arc(ballX - ballVX * 4, ballY - ballVY * 4, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(ballX - ballVX * 8, ballY - ballVY * 8, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // particle explosions
+  for (let p of particles) {
+    ctx.fillStyle = p.color;
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = p.color;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // extra neon corner glow
+  ctx.shadowBlur = 50;
+  ctx.shadowColor = "magenta";
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 80, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,0,255,0.15)";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(canvas.width, canvas.height, 80, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(0,255,255,0.15)";
+  ctx.fill();
+
+  // neon border
+  ctx.strokeStyle = "cyan";
+  ctx.lineWidth = 4;
+  ctx.shadowBlur = 40 + Math.sin(Date.now() * 0.02) * 10;
+  ctx.shadowColor = "cyan";
+  ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+  ctx.shadowBlur = 0;
+
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
